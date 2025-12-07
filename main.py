@@ -9,8 +9,7 @@ import os
 LINE_ACCESS_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 LINE_USER_ID = os.environ.get("LINE_USER_ID")
 
-# --- 股票代碼與中文名稱對照表 (台股權值股精選) ---
-# 字典查詢速度最快，避免額外 API 請求
+# --- 股票清單 (台股權值與熱門股) ---
 STOCK_MAP = {
     # 權值龍頭
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2303": "聯電",
@@ -30,14 +29,14 @@ STOCK_MAP = {
     "3324": "雙鴻", "3017": "奇鋐",                                   # 散熱
     "8046": "南電", "3189": "景碩",                                   # ABF
     "2618": "長榮航", "2610": "華航",                                 # 航空
-    "9904": "寶成", "9910": "豐泰"                                    # 傳產
+    "9904": "寶成", "9910": "豐泰", "9907": "統一實",                 # 傳產
+    "6285": "啟碁", "5347": "世界", "6446": "藥華藥"                  # 其他
 }
 
-# 取得所有要掃描的代碼
 TARGET_STOCKS = sorted(list(STOCK_MAP.keys()))
 
 def send_line_msg(msg):
-    """ 使用 LINE Messaging API 推播訊息 """
+    """ LINE Messaging API """
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Content-Type": "application/json",
@@ -52,49 +51,94 @@ def send_line_msg(msg):
     except Exception as e:
         print(f"❌ 連線錯誤: {e}")
 
+def get_dynamic_support(current_price, df):
+    """
+    動態尋找最貼近的均線支撐
+    邏輯：檢查 5, 10, 20, 60 日線，找出「位於股價下方」且「最接近股價」的那條線。
+    """
+    ma_days = [5, 10, 20, 60]
+    best_ma_val = 0
+    best_ma_name = "無"
+    
+    # 計算各均線值
+    ma_values = {}
+    for d in ma_days:
+        val = df['Close'].tail(d).mean()
+        ma_values[f"{d}MA"] = val
+
+    # 找出「小於現價」的最大均線 (最靠近的地板)
+    candidates = {k: v for k, v in ma_values.items() if v < current_price}
+    
+    if candidates:
+        # 找最大值 (最接近現價)
+        best_ma_name = max(candidates, key=candidates.get)
+        best_ma_val = candidates[best_ma_name]
+    else:
+        # 如果股價跌破所有均線，則支撐為前波低點
+        best_ma_val = df['Low'].min()
+        best_ma_name = "前低"
+
+    return best_ma_name, best_ma_val
+
+def get_pressure_from_volume(df):
+    """
+    計算籌碼壓力：過去 60 天內，成交量最大那一天的「最高價」
+    """
+    # 找到最大成交量的日期索引
+    idx_max_vol = df['Volume'].idxmax()
+    # 取得那一天的最高價
+    pressure_price = df.loc[idx_max_vol]['High']
+    return pressure_price
+
 def analyze_market():
-    print(f"🚀 開始執行全市場掃描，共 {len(TARGET_STOCKS)} 檔股票...")
+    print(f"🚀 啟動 AI 掃描：動態支撐/大量壓力運算中...")
     strong_stocks = []
     
     count = 0
-    total = len(TARGET_STOCKS)
-
     for code in TARGET_STOCKS:
         count += 1
-        if count % 10 == 0: print(f"進度: {count}/{total}...")
+        if count % 10 == 0: print(f"進度: {count}/{len(TARGET_STOCKS)}...")
 
         try:
             ticker = f"{code}.TW"
             stock = yf.Ticker(ticker)
-            
-            # 改為抓取 3 個月 (3mo) 資料，以便計算 60 日高點壓力
+            # 抓取 3 個月以計算 60 日內的爆量點
             df = stock.history(period="3mo")
             
-            if len(df) < 60: continue # 資料太短跳過
+            if len(df) < 60: continue
             
             latest = df.iloc[-1]
             prev = df.iloc[-2]
             
-            # --- 技術指標計算 ---
-            # 1. 20日均線 (作為支撐)
+            # --- 基礎數據 ---
             sma20 = df['Close'].tail(20).mean()
-            
-            # 2. 60日最高價 (作為壓力)
-            high_60 = df['High'].tail(60).max()
-            
-            # 3. 5日均量
+            sma60 = df['Close'].tail(60).mean()
             vol_ma5 = df['Volume'].tail(5).mean()
             
-            # --- 篩選策略 (月線之上 + 爆量 + 收紅) ---
-            is_bullish = latest['Close'] > sma20
-            is_volume_spike = latest['Volume'] > vol_ma5 * 1.5
-            is_red = latest['Close'] > prev['Close']
+            # --- 篩選條件 (多頭排列 + 攻擊量) ---
+            # 1. 股價 > 月線 > 季線 (多頭排列)
+            is_trend_up = latest['Close'] > sma20 and sma20 > sma60
+            # 2. 爆量 (1.3倍即可，放寬標準以免漏掉緩步推升股)
+            is_volume_spike = latest['Volume'] > vol_ma5 * 1.3
+            # 3. 漲幅 > 1%
             pct_change = (latest['Close'] - prev['Close']) / prev['Close'] * 100
 
-            # 漲幅大於 1% 才入選
-            if is_bullish and is_volume_spike and is_red and pct_change > 1.0:
+            if is_trend_up and is_volume_spike and pct_change > 1.0:
                 
-                # 取得中文名稱，如果沒有就顯示 Code
+                # --- 進階計算 ---
+                # A. 找動態支撐
+                sup_name, sup_price = get_dynamic_support(latest['Close'], df)
+                
+                # B. 找爆量壓力
+                res_price = get_pressure_from_volume(df)
+                
+                # 若現價已經突破爆量壓力，則壓力改為近半年高點(或顯示無壓)
+                if latest['Close'] > res_price:
+                    res_price = df['High'].max() # 改抓區間最高
+                    res_note = "(新高)"
+                else:
+                    res_note = "(量壓)"
+
                 name = STOCK_MAP.get(code, code)
                 
                 stock_data = {
@@ -102,43 +146,47 @@ def analyze_market():
                     "name": name,
                     "price": round(latest['Close'], 1),
                     "pct": round(pct_change, 2),
-                    "support": round(sma20, 1),   # 支撐 = 月線
-                    "pressure": round(high_60, 1) # 壓力 = 近季高點
+                    "sup_n": sup_name,            # 支撐名稱 (如 5MA)
+                    "sup_p": round(sup_price, 1), # 支撐價格
+                    "res_p": round(res_price, 1), # 壓力價格
+                    "res_note": res_note          # 壓力備註
                 }
                 strong_stocks.append(stock_data)
-                print(f"🔥 抓到: {name} (+{stock_data['pct']}%)")
+                print(f"🔥 入選: {name} (撐在 {sup_name})")
             
             time.sleep(0.5) 
             
-        except Exception as e:
-            print(f"Error {code}: {e}")
+        except Exception:
             continue
 
-    # --- 整理排行榜與發送訊息 ---
+    # --- 排序與發送 ---
     if strong_stocks:
-        # 依漲幅排序
+        # 依照漲幅排序
         strong_stocks.sort(key=lambda x: x['pct'], reverse=True)
-        top_picks = strong_stocks[:8] # 最多顯示 8 檔，避免訊息太長被截斷
+        top_picks = strong_stocks[:8]
 
-        msg_body = f"【📊 台股戰情室】\n"
-        msg_body += f"強勢股掃描 (支撐/壓力)\n"
+        msg_body = f"【📈 AI 操盤手報告】\n"
+        msg_body += f"策略：多頭排列 + 動態支撐\n"
         msg_body += "=" * 16 + "\n"
         
         for s in top_picks:
-            # 格式優化：
+            # 格式：
             # 🔥 2330 台積電 (+2.5%)
-            # 💰 $1050 | 撐 1020 / 壓 1080
+            # 支撐: 1020(5MA) | 壓力: 1080(量壓)
             msg_body += f"🔥 {s['code']} {s['name']} (+{s['pct']}%)\n"
-            msg_body += f"💰 ${s['price']} | 撐 {s['support']} / 壓 {s['pressure']}\n"
+            msg_body += f"🟢 撐: {s['sup_p']}({s['sup_n']})\n"
+            msg_body += f"🔴 壓: {s['res_p']}{s['res_note']}\n"
             msg_body += "-" * 16 + "\n"
         
         msg_body += "(AI 計算僅供參考)"
         
         if LINE_ACCESS_TOKEN:
             send_line_msg(msg_body)
-            print("✅ 完整報告已發送！")
+            print("✅ 報告發送成功")
+        else:
+            print(msg_body)
     else:
-        print("今日無符合條件之股票。")
+        print("今日盤勢震盪，無符合強勢多頭條件個股。")
 
 if __name__ == "__main__":
     analyze_market()
