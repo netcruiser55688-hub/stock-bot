@@ -67,7 +67,7 @@ def get_pressure_from_volume(df):
     return df.loc[idx_max_vol]['High']
 
 def analyze_market():
-    print(f"🚀 啟動雙策略掃描：強勢攻擊 vs 盤整蓄勢...")
+    print(f"🚀 啟動雙策略掃描 (Max Top 10)...")
     
     strong_list = [] # 策略A: 強勢股
     ready_list = []  # 策略B: 盤整蓄勢股
@@ -144,21 +144,23 @@ def analyze_market():
 
     # --- 訊息發送與報告產出 ---
     
-    # 1. 建立統計摘要 (Summary)
+    # 1. 建立統計摘要
     msg = "【📊 AI 雙策略選股報告】\n"
     msg += f"🔥 強勢攻擊: 共 {len(strong_list)} 檔\n"
     msg += f"📦 盤整蓄勢: 共 {len(ready_list)} 檔\n"
     msg += "="*16 + "\n"
 
-    # 2. 判斷是否有標的，並組合細節
+    # 2. 判斷是否有標的
     if not strong_list and not ready_list:
         msg += "今日盤勢震盪，兩策略皆無符合標的。\n建議觀望或減少操作。"
     else:
-        # 區塊 1: 強勢股清單
+        # 區塊 1: 強勢股 (顯示 Top 10)
         if strong_list:
             strong_list.sort(key=lambda x: x['pct'], reverse=True)
-            msg += f"🚀 強勢股 (Top {min(5, len(strong_list))}):\n"
-            for s in strong_list[:5]:
+            # 這裡改成取前 10 名
+            top_strong = strong_list[:10]
+            msg += f"🚀 強勢股 (Top {len(top_strong)}):\n"
+            for s in top_strong:
                 msg += f"🔥 {s['code']} {s['name']}\n"
                 msg += f"💰 {s['price']} (+{s['pct']}%)\n"
                 msg += f"🟢 撐 {s['sup_p']} / 🔴 壓 {s['res_p']}\n"
@@ -167,11 +169,13 @@ def analyze_market():
             msg += "🚀 強勢股: 本日無標的\n"
             msg += "-"*16 + "\n"
 
-        # 區塊 2: 蓄勢股清單
+        # 區塊 2: 蓄勢股 (顯示 Top 10)
         if ready_list:
             ready_list.sort(key=lambda x: x['vol_ratio'], reverse=True)
-            msg += f"📦 蓄勢股 (Top {min(5, len(ready_list))}):\n"
-            for s in ready_list[:5]:
+            # 這裡也改成取前 10 名
+            top_ready = ready_list[:10]
+            msg += f"📦 蓄勢股 (Top {len(top_ready)}):\n"
+            for s in top_ready:
                 msg += f"👀 {s['code']} {s['name']}\n"
                 msg += f"💰 {s['price']} (區間整理)\n"
                 msg += f"📊 {s['box_l']}~{s['box_h']} (量增{s['vol_ratio']}倍)\n"
