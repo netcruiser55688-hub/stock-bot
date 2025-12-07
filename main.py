@@ -9,32 +9,32 @@ import os
 LINE_ACCESS_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 LINE_USER_ID = os.environ.get("LINE_USER_ID")
 
-# --- 台灣 50 (0050) + 中型 100 (0051) 成分股清單 ---
-# 為了避免爬蟲失效，直接內建這 150 檔熱門權值股
-ALL_STOCKS = [
-    # 台灣 50
-    "2330", "2317", "2454", "2308", "2303", "2881", "2882", "1301", "2002", "2603",
-    "3231", "2382", "2357", "3008", "1303", "2891", "1216", "2886", "2884", "5880",
-    "2892", "2885", "2207", "2379", "3045", "5871", "2345", "3034", "2890", "2912",
-    "1101", "4904", "2880", "2883", "2887", "2395", "2412", "3711", "5876", "6669",
-    "3037", "1605", "2059", "2327", "2408", "2609", "2615", "3017", "3231", "4938",
-    # 中型 100 (精選部分高流動性代表)
-    "1102", "1210", "1227", "1304", "1308", "1319", "1402", "1434", "1476", "1477",
-    "1503", "1504", "1513", "1560", "1590", "1605", "1702", "1707", "1712", "1717",
-    "1722", "1723", "1785", "1795", "1802", "1907", "2006", "2014", "2027", "2049",
-    "2101", "2105", "2201", "2204", "2312", "2313", "2324", "2337", "2344", "2347",
-    "2352", "2353", "2354", "2356", "2360", "2362", "2368", "2376", "2377", "2383",
-    "2385", "2388", "2392", "2393", "2404", "2409", "2439", "2441", "2449", "2451",
-    "2474", "2480", "2492", "2498", "2501", "2542", "2606", "2610", "2618", "2637",
-    "3005", "3023", "3035", "3036", "3042", "3044", "3189", "3293", "3406", "3443",
-    "3532", "3661", "3702", "4919", "4958", "4961", "4966", "5269", "5522", "6176",
-    "6213", "6239", "6269", "6271", "6278", "6409", "6415", "6456", "6505", "6669",
-    "6770", "8046", "8069", "8454", "8464", "9904", "9910", "9914", "9917", "9921",
-    "9941", "9945"
-]
+# --- 股票代碼與中文名稱對照表 (台股權值股精選) ---
+# 字典查詢速度最快，避免額外 API 請求
+STOCK_MAP = {
+    # 權值龍頭
+    "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2303": "聯電",
+    "2881": "富邦金", "2882": "國泰金", "1301": "台塑", "2002": "中鋼", "2603": "長榮",
+    "3711": "日月光", "2891": "中信金", "1216": "統一", "2886": "兆豐金", "2884": "玉山金",
+    "5880": "合庫金", "2892": "第一金", "2885": "元大金", "2207": "和泰車", "2379": "瑞昱",
+    "3045": "台灣大", "5871": "中租", "2345": "智邦", "3034": "聯詠", "2890": "永豐金",
+    "2912": "統一超", "1101": "台泥", "4904": "遠傳", "2880": "華南金", "2883": "凱基金",
+    "2887": "台新金", "2395": "研華", "2412": "中華電", "5876": "上海商銀", "6669": "緯穎",
+    "3037": "欣興", "1605": "華新", "2059": "川湖", "2327": "國巨", "2408": "南亞科",
+    "2609": "陽明", "2615": "萬海", "3017": "奇鋐", "3231": "緯創", "4938": "和碩",
+    "2382": "廣達", "2357": "華碩", "3008": "大立光", "1303": "南亞",
+    # 熱門中型與題材股
+    "1513": "中興電", "1503": "士電", "1519": "華城", "1504": "東元", # 重電
+    "3035": "智原", "3443": "創意", "3661": "世芯", "6531": "愛普",   # IP/IC
+    "2376": "技嘉", "2356": "英業達", "3013": "晟銘電",               # AI 伺服器
+    "3324": "雙鴻", "3017": "奇鋐",                                   # 散熱
+    "8046": "南電", "3189": "景碩",                                   # ABF
+    "2618": "長榮航", "2610": "華航",                                 # 航空
+    "9904": "寶成", "9910": "豐泰"                                    # 傳產
+}
 
-# 移除重複代碼 (以防萬一)
-TARGET_STOCKS = sorted(list(set(ALL_STOCKS)))
+# 取得所有要掃描的代碼
+TARGET_STOCKS = sorted(list(STOCK_MAP.keys()))
 
 def send_line_msg(msg):
     """ 使用 LINE Messaging API 推播訊息 """
@@ -56,78 +56,89 @@ def analyze_market():
     print(f"🚀 開始執行全市場掃描，共 {len(TARGET_STOCKS)} 檔股票...")
     strong_stocks = []
     
-    # 進度條計數器
     count = 0
     total = len(TARGET_STOCKS)
 
     for code in TARGET_STOCKS:
         count += 1
-        # 在 GitHub Log 顯示簡易進度，每 10 檔印一次，避免 Log 太長
-        if count % 10 == 0:
-            print(f"進度: {count}/{total}...")
+        if count % 10 == 0: print(f"進度: {count}/{total}...")
 
         try:
             ticker = f"{code}.TW"
             stock = yf.Ticker(ticker)
-            df = stock.history(period="30d")
             
-            if len(df) < 20: continue 
+            # 改為抓取 3 個月 (3mo) 資料，以便計算 60 日高點壓力
+            df = stock.history(period="3mo")
+            
+            if len(df) < 60: continue # 資料太短跳過
             
             latest = df.iloc[-1]
             prev = df.iloc[-2]
             
-            # --- 嚴格篩選策略 ---
-            # 1. 站上月線 (趨勢多頭)
+            # --- 技術指標計算 ---
+            # 1. 20日均線 (作為支撐)
             sma20 = df['Close'].tail(20).mean()
-            # 2. 爆量 (大於 5日均量 1.5倍)
+            
+            # 2. 60日最高價 (作為壓力)
+            high_60 = df['High'].tail(60).max()
+            
+            # 3. 5日均量
             vol_ma5 = df['Volume'].tail(5).mean()
+            
+            # --- 篩選策略 (月線之上 + 爆量 + 收紅) ---
+            is_bullish = latest['Close'] > sma20
             is_volume_spike = latest['Volume'] > vol_ma5 * 1.5
-            # 3. 實體紅K (收盤 > 開盤 且 收盤 > 昨天收盤)
-            is_red_candle = latest['Close'] > latest['Open'] and latest['Close'] > prev['Close']
-            # 4. 漲幅大於 1% (過濾掉那種只漲 0.1% 的盤整股)
-            change_pct = (latest['Close'] - prev['Close']) / prev['Close'] * 100
+            is_red = latest['Close'] > prev['Close']
+            pct_change = (latest['Close'] - prev['Close']) / prev['Close'] * 100
 
-            if latest['Close'] > sma20 and is_volume_spike and is_red_candle and change_pct > 1.0:
+            # 漲幅大於 1% 才入選
+            if is_bullish and is_volume_spike and is_red and pct_change > 1.0:
+                
+                # 取得中文名稱，如果沒有就顯示 Code
+                name = STOCK_MAP.get(code, code)
+                
                 stock_data = {
                     "code": code,
+                    "name": name,
                     "price": round(latest['Close'], 1),
-                    "pct": round(change_pct, 2)
+                    "pct": round(pct_change, 2),
+                    "support": round(sma20, 1),   # 支撐 = 月線
+                    "pressure": round(high_60, 1) # 壓力 = 近季高點
                 }
                 strong_stocks.append(stock_data)
-                print(f"🔥 抓到飆股: {code} (+{stock_data['pct']}%)")
+                print(f"🔥 抓到: {name} (+{stock_data['pct']}%)")
             
-            # ⚠️ 關鍵：增加休息時間，避免掃 150 檔被 Yahoo 封鎖 IP
-            time.sleep(0.8) 
+            time.sleep(0.5) 
             
         except Exception as e:
             print(f"Error {code}: {e}")
             continue
 
-    # --- 整理與排序 (排行榜機制) ---
+    # --- 整理排行榜與發送訊息 ---
     if strong_stocks:
-        # 依照漲幅由高到低排序 (最強的在上面)
+        # 依漲幅排序
         strong_stocks.sort(key=lambda x: x['pct'], reverse=True)
-        
-        # 只取前 10 名，避免訊息太長
-        top_picks = strong_stocks[:10]
+        top_picks = strong_stocks[:8] # 最多顯示 8 檔，避免訊息太長被截斷
 
-        msg_body = f"【🏆 台股 150 大掃描】\n"
-        msg_body += f"強勢股 TOP {len(top_picks)} (月線之上+爆量)\n"
-        msg_body += "-" * 18 + "\n"
+        msg_body = f"【📊 台股戰情室】\n"
+        msg_body += f"強勢股掃描 (支撐/壓力)\n"
+        msg_body += "=" * 16 + "\n"
         
         for s in top_picks:
-            msg_body += f"🔥 {s['code']} | 漲{s['pct']}% | ${s['price']}\n"
+            # 格式優化：
+            # 🔥 2330 台積電 (+2.5%)
+            # 💰 $1050 | 撐 1020 / 壓 1080
+            msg_body += f"🔥 {s['code']} {s['name']} (+{s['pct']}%)\n"
+            msg_body += f"💰 ${s['price']} | 撐 {s['support']} / 壓 {s['pressure']}\n"
+            msg_body += "-" * 16 + "\n"
         
-        msg_body += "\n(AI 僅供參考，投資自負風險)"
+        msg_body += "(AI 計算僅供參考)"
         
-        # 發送
-        if LINE_ACCESS_TOKEN and LINE_USER_ID:
+        if LINE_ACCESS_TOKEN:
             send_line_msg(msg_body)
-            print("✅ 排行榜通知已發送！")
-        else:
-            print(msg_body)
+            print("✅ 完整報告已發送！")
     else:
-        print("今日市場疲弱，無符合條件之強勢股。")
+        print("今日無符合條件之股票。")
 
 if __name__ == "__main__":
     analyze_market()
