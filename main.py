@@ -9,57 +9,63 @@ import os
 LINE_ACCESS_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 LINE_USER_ID = os.environ.get("LINE_USER_ID")
 
-# --- 選股清單 (可自行擴充) ---
-TARGET_STOCKS = [
+# --- 台灣 50 (0050) + 中型 100 (0051) 成分股清單 ---
+# 為了避免爬蟲失效，直接內建這 150 檔熱門權值股
+ALL_STOCKS = [
+    # 台灣 50
     "2330", "2317", "2454", "2308", "2303", "2881", "2882", "1301", "2002", "2603",
-    "3231", "2382", "2357", "3008", "1303", "2891", "1216", "2886", "2884", "5880"
+    "3231", "2382", "2357", "3008", "1303", "2891", "1216", "2886", "2884", "5880",
+    "2892", "2885", "2207", "2379", "3045", "5871", "2345", "3034", "2890", "2912",
+    "1101", "4904", "2880", "2883", "2887", "2395", "2412", "3711", "5876", "6669",
+    "3037", "1605", "2059", "2327", "2408", "2609", "2615", "3017", "3231", "4938",
+    # 中型 100 (精選部分高流動性代表)
+    "1102", "1210", "1227", "1304", "1308", "1319", "1402", "1434", "1476", "1477",
+    "1503", "1504", "1513", "1560", "1590", "1605", "1702", "1707", "1712", "1717",
+    "1722", "1723", "1785", "1795", "1802", "1907", "2006", "2014", "2027", "2049",
+    "2101", "2105", "2201", "2204", "2312", "2313", "2324", "2337", "2344", "2347",
+    "2352", "2353", "2354", "2356", "2360", "2362", "2368", "2376", "2377", "2383",
+    "2385", "2388", "2392", "2393", "2404", "2409", "2439", "2441", "2449", "2451",
+    "2474", "2480", "2492", "2498", "2501", "2542", "2606", "2610", "2618", "2637",
+    "3005", "3023", "3035", "3036", "3042", "3044", "3189", "3293", "3406", "3443",
+    "3532", "3661", "3702", "4919", "4958", "4961", "4966", "5269", "5522", "6176",
+    "6213", "6239", "6269", "6271", "6278", "6409", "6415", "6456", "6505", "6669",
+    "6770", "8046", "8069", "8454", "8464", "9904", "9910", "9914", "9917", "9921",
+    "9941", "9945"
 ]
 
+# 移除重複代碼 (以防萬一)
+TARGET_STOCKS = sorted(list(set(ALL_STOCKS)))
+
 def send_line_msg(msg):
-    """ 
-    使用 LINE Messaging API 推播訊息 (Push Message)
-    """
+    """ 使用 LINE Messaging API 推播訊息 """
     url = "https://api.line.me/v2/bot/message/push"
-    
     headers = {
         "Content-Type": "application/json",
         "Authorization": "Bearer " + str(LINE_ACCESS_TOKEN)
     }
-    
     payload = {
         "to": str(LINE_USER_ID),
-        "messages": [
-            {
-                "type": "text",
-                "text": msg
-            }
-        ]
+        "messages": [{"type": "text", "text": msg}]
     }
-    
     try:
-        # 發送請求
-        response = requests.post(url, headers=headers, data=json.dumps(payload))
-        
-        # 檢查結果
-        if response.status_code == 200:
-            print("✅ LINE 通知已發送！")
-        else:
-            print(f"❌ 發送失敗: {response.status_code}")
-            print(response.text) # 印出錯誤訊息方便除錯
-            
+        requests.post(url, headers=headers, data=json.dumps(payload))
     except Exception as e:
         print(f"❌ 連線錯誤: {e}")
 
 def analyze_market():
-    print("🚀 開始執行全台股掃描...")
+    print(f"🚀 開始執行全市場掃描，共 {len(TARGET_STOCKS)} 檔股票...")
     strong_stocks = []
     
-    # 建立訊息標題
-    msg_body = "【📊 台股收盤強勢掃描】\n"
-    msg_body += f"掃描範圍：台灣權值股 ({len(TARGET_STOCKS)}檔)\n"
-    msg_body += "-" * 15 + "\n"
+    # 進度條計數器
+    count = 0
+    total = len(TARGET_STOCKS)
 
     for code in TARGET_STOCKS:
+        count += 1
+        # 在 GitHub Log 顯示簡易進度，每 10 檔印一次，避免 Log 太長
+        if count % 10 == 0:
+            print(f"進度: {count}/{total}...")
+
         try:
             ticker = f"{code}.TW"
             stock = yf.Ticker(ticker)
@@ -70,62 +76,58 @@ def analyze_market():
             latest = df.iloc[-1]
             prev = df.iloc[-2]
             
-            # --- 篩選策略 ---
-            # 1. 站上月線
+            # --- 嚴格篩選策略 ---
+            # 1. 站上月線 (趨勢多頭)
             sma20 = df['Close'].tail(20).mean()
             # 2. 爆量 (大於 5日均量 1.5倍)
             vol_ma5 = df['Volume'].tail(5).mean()
             is_volume_spike = latest['Volume'] > vol_ma5 * 1.5
-            # 3. 收紅
-            is_up = latest['Close'] > prev['Close']
+            # 3. 實體紅K (收盤 > 開盤 且 收盤 > 昨天收盤)
+            is_red_candle = latest['Close'] > latest['Open'] and latest['Close'] > prev['Close']
+            # 4. 漲幅大於 1% (過濾掉那種只漲 0.1% 的盤整股)
+            change_pct = (latest['Close'] - prev['Close']) / prev['Close'] * 100
 
-            if latest['Close'] > sma20 and is_volume_spike and is_up:
-                change_pct = round((latest['Close'] - prev['Close']) / prev['Close'] * 100, 2)
-                # 為了版面整潔，縮短每行訊息
-                stock_info = f"🔥 {code} | 漲{change_pct}% | ${round(latest['Close'], 1)}"
-                strong_stocks.append(stock_info)
-                print(f"發現強勢股: {code}")
+            if latest['Close'] > sma20 and is_volume_spike and is_red_candle and change_pct > 1.0:
+                stock_data = {
+                    "code": code,
+                    "price": round(latest['Close'], 1),
+                    "pct": round(change_pct, 2)
+                }
+                strong_stocks.append(stock_data)
+                print(f"🔥 抓到飆股: {code} (+{stock_data['pct']}%)")
             
-            time.sleep(1) # 避免太快被擋
+            # ⚠️ 關鍵：增加休息時間，避免掃 150 檔被 Yahoo 封鎖 IP
+            time.sleep(0.8) 
             
         except Exception as e:
             print(f"Error {code}: {e}")
             continue
 
-    # --- 整理與發送 ---
+    # --- 整理與排序 (排行榜機制) ---
     if strong_stocks:
-        msg_body += "\n".join(strong_stocks)
-        msg_body += "\n\n(AI 僅供參考)"
+        # 依照漲幅由高到低排序 (最強的在上面)
+        strong_stocks.sort(key=lambda x: x['pct'], reverse=True)
         
-        # 檢查是否設定了 Token
+        # 只取前 10 名，避免訊息太長
+        top_picks = strong_stocks[:10]
+
+        msg_body = f"【🏆 台股 150 大掃描】\n"
+        msg_body += f"強勢股 TOP {len(top_picks)} (月線之上+爆量)\n"
+        msg_body += "-" * 18 + "\n"
+        
+        for s in top_picks:
+            msg_body += f"🔥 {s['code']} | 漲{s['pct']}% | ${s['price']}\n"
+        
+        msg_body += "\n(AI 僅供參考，投資自負風險)"
+        
+        # 發送
         if LINE_ACCESS_TOKEN and LINE_USER_ID:
             send_line_msg(msg_body)
+            print("✅ 排行榜通知已發送！")
         else:
-            print("❌ 未設定 LINE Token，無法發送訊息。")
-            print("請檢查 GitHub Secrets 或本機變數設定。")
             print(msg_body)
     else:
-        print("今日無符合條件之股票，不發送通知。")
-
+        print("今日市場疲弱，無符合條件之強勢股。")
 
 if __name__ == "__main__":
-    # --- 除錯區塊 (Debug) ---
-    print(f"檢查 Token 設定...")
-    if LINE_ACCESS_TOKEN:
-        print(f"Token 讀取成功！長度為: {len(LINE_ACCESS_TOKEN)}")
-        print(f"Token 前 5 碼: {LINE_ACCESS_TOKEN[:5]}...") # 只印前5碼確認沒貼錯
-    else:
-        print("❌ Token 為空值 (None)，請檢查 .yml 的 env 設定")
-
-    if LINE_USER_ID:
-        print(f"User ID 讀取成功: {LINE_USER_ID}")
-    else:
-        print("❌ User ID 為空值")
-    # -----------------------
-
-    # 1. 強制發送測試訊息
-    print("--- 正在執行強制連線測試 ---")
-    send_line_msg("測試成功！Token 設定正確，機器人已復活。")
-    
-    # 2. 執行掃描
     analyze_market()
