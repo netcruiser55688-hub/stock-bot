@@ -108,4 +108,9 @@ def analyze_market():
         print("今日無符合條件之股票，不發送通知。")
 
 if __name__ == "__main__":
+    # 1. 強制發送測試訊息 (確認連線用)
+    print("--- 正在執行強制連線測試 ---")
+    send_line_msg("測試成功！你的股市機器人已連線。")
+    
+    # 2. 接著才執行原本的掃描
     analyze_market()
