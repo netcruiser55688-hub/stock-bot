@@ -6,7 +6,7 @@ import time
 import os
 
 # --- 設定密鑰 ---
-LINE_ACCESS_TOKEN = os.environ.get("LINE_TOKEN")
+LINE_ACCESS_TOKEN = os.environ.get("LINE_ACCESS_TOKEN")
 LINE_USER_ID = os.environ.get("LINE_USER_ID")
 
 # --- 選股清單 (可自行擴充) ---
