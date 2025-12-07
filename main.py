@@ -107,10 +107,25 @@ def analyze_market():
     else:
         print("今日無符合條件之股票，不發送通知。")
 
+
 if __name__ == "__main__":
-    # 1. 強制發送測試訊息 (確認連線用)
+    # --- 除錯區塊 (Debug) ---
+    print(f"檢查 Token 設定...")
+    if LINE_ACCESS_TOKEN:
+        print(f"Token 讀取成功！長度為: {len(LINE_ACCESS_TOKEN)}")
+        print(f"Token 前 5 碼: {LINE_ACCESS_TOKEN[:5]}...") # 只印前5碼確認沒貼錯
+    else:
+        print("❌ Token 為空值 (None)，請檢查 .yml 的 env 設定")
+
+    if LINE_USER_ID:
+        print(f"User ID 讀取成功: {LINE_USER_ID}")
+    else:
+        print("❌ User ID 為空值")
+    # -----------------------
+
+    # 1. 強制發送測試訊息
     print("--- 正在執行強制連線測試 ---")
-    send_line_msg("測試成功！你的股市機器人已連線。")
+    send_line_msg("測試成功！Token 設定正確，機器人已復活。")
     
-    # 2. 接著才執行原本的掃描
+    # 2. 執行掃描
     analyze_market()
