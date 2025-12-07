@@ -101,8 +101,7 @@ def analyze_market():
             res_note = "(新高)" if price > res_p else "(量壓)"
             if price > res_p: res_p = df['High'].max()
 
-            # ========== 策略 A: 強勢攻擊股 (Trend Following) ==========
-            # 條件：多頭排列 + 爆量 + 實體紅K
+            # ========== 策略 A: 強勢攻擊股 ==========
             is_trend = price > sma20 and sma20 > sma60
             is_spike = latest['Volume'] > vol_ma5 * 1.3
             is_up = pct_change > 1.0
@@ -115,84 +114,80 @@ def analyze_market():
                 })
                 print(f"🔥 強勢: {name}")
 
-            # ========== 策略 B: 盤整蓄勢股 (Consolidation Setup) ==========
-            # 條件：
-            # 1. 區間盤整：過去 10 天高低點震幅 < 8% (箱型整理)
-            # 2. 蓄勢待發：現價位於箱型上半部 (準備突破)
-            # 3. 偷吃貨：最近 3 天平均成交量 > 10 天平均 (價穩量增)
-            # 4. 多頭預備：股價還是在季線(SMA60)之上 (長多保護短空)
-            
+            # ========== 策略 B: 盤整蓄勢股 ==========
             hist_10 = df.iloc[-10:]
             box_high = hist_10['High'].max()
             box_low = hist_10['Low'].min()
-            
-            # 箱型幅度 (Box Width)
             box_width = (box_high - box_low) / box_low
-            is_tight_box = box_width < 0.08  # 8% 以內的壓縮
             
-            # 位置 (Position in Box)
+            is_tight_box = box_width < 0.08
             box_mid = (box_high + box_low) / 2
-            is_upper_half = price > box_mid # 收在箱型上半部
+            is_upper_half = price > box_mid
             
-            # 量能佈局 (Accumulation)
             vol_3ma = df['Volume'].tail(3).mean()
             vol_10ma = df['Volume'].tail(10).mean()
-            is_accumulating = vol_3ma > vol_10ma # 近期量能溫和放大
-            
-            # 長線保護
+            is_accumulating = vol_3ma > vol_10ma 
             is_long_trend = price > sma60 
 
             if is_tight_box and is_upper_half and is_accumulating and is_long_trend:
-                # 為了避免跟強勢股重複，如果漲幅太大(>3%)通常已經噴出了，就不算盤整
                 if pct_change < 3.0: 
                     ready_list.append({
                         "name": name, "code": code, "price": round(price, 1),
                         "box_h": round(box_high, 1), "box_l": round(box_low, 1),
-                        "vol_ratio": round(vol_3ma/vol_10ma, 1) # 量能放大倍數
+                        "vol_ratio": round(vol_3ma/vol_10ma, 1)
                     })
-                    print(f"📦 蓄勢: {name} (箱型 {round(box_width*100,1)}%)")
+                    print(f"📦 蓄勢: {name}")
 
             time.sleep(0.5) 
             
         except Exception: continue
 
-    # --- 訊息發送 ---
-    if strong_list or ready_list:
-        msg = "【📊 AI 雙策略選股報告】\n"
-        
-        # 區塊 1: 強勢股
+    # --- 訊息發送與報告產出 ---
+    
+    # 1. 建立統計摘要 (Summary)
+    msg = "【📊 AI 雙策略選股報告】\n"
+    msg += f"🔥 強勢攻擊: 共 {len(strong_list)} 檔\n"
+    msg += f"📦 盤整蓄勢: 共 {len(ready_list)} 檔\n"
+    msg += "="*16 + "\n"
+
+    # 2. 判斷是否有標的，並組合細節
+    if not strong_list and not ready_list:
+        msg += "今日盤勢震盪，兩策略皆無符合標的。\n建議觀望或減少操作。"
+    else:
+        # 區塊 1: 強勢股清單
         if strong_list:
             strong_list.sort(key=lambda x: x['pct'], reverse=True)
-            msg += f"🚀 噴出強勢股 (前{min(5, len(strong_list))}名)\n"
-            msg += "="*16 + "\n"
+            msg += f"🚀 強勢股 (Top {min(5, len(strong_list))}):\n"
             for s in strong_list[:5]:
                 msg += f"🔥 {s['code']} {s['name']}\n"
                 msg += f"💰 {s['price']} (+{s['pct']}%)\n"
                 msg += f"🟢 撐 {s['sup_p']} / 🔴 壓 {s['res_p']}\n"
                 msg += "-"*16 + "\n"
-        
-        # 區塊 2: 盤整蓄勢股
+        else:
+            msg += "🚀 強勢股: 本日無標的\n"
+            msg += "-"*16 + "\n"
+
+        # 區塊 2: 蓄勢股清單
         if ready_list:
-            # 依量能放大倍數排序 (量越大的越可能快噴)
             ready_list.sort(key=lambda x: x['vol_ratio'], reverse=True)
-            msg += f"\n📦 盤整蓄勢股 (主力佈局)\n"
-            msg += "="*16 + "\n"
+            msg += f"📦 蓄勢股 (Top {min(5, len(ready_list))}):\n"
             for s in ready_list[:5]:
                 msg += f"👀 {s['code']} {s['name']}\n"
-                msg += f"💰 現價 {s['price']} (區間整理)\n"
-                msg += f"📊 區間: {s['box_l']} ~ {s['box_h']}\n"
-                msg += f"⚡ 量能放大: {s['vol_ratio']}倍\n"
+                msg += f"💰 {s['price']} (區間整理)\n"
+                msg += f"📊 {s['box_l']}~{s['box_h']} (量增{s['vol_ratio']}倍)\n"
                 msg += "-"*16 + "\n"
-
-        msg += "(AI 僅供參考)"
-        
-        if LINE_ACCESS_TOKEN:
-            send_line_msg(msg)
-            print("✅ 雙策略報告已發送")
         else:
-            print(msg)
+            msg += "📦 蓄勢股: 本日無標的\n"
+            msg += "-"*16 + "\n"
+
+    msg += "(AI 僅供參考)"
+    
+    # 3. 發送
+    if LINE_ACCESS_TOKEN:
+        send_line_msg(msg)
+        print("✅ 報告發送成功")
     else:
-        print("今日無符合條件個股")
+        print(msg)
 
 if __name__ == "__main__":
     analyze_market()
