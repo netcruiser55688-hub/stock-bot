@@ -50,27 +50,48 @@ def send_line_msg(msg):
     except Exception as e:
         print(f"❌ 連線錯誤: {e}")
 
+# --- 優化功能 1: 檢查 K 棒結構 (過濾避雷針) ---
+def is_solid_candle(open_p, close_p, high_p, low_p):
+    """
+    判斷是否為實體強勢紅 K (拒絕長上影線)
+    規則：上影線長度 不得超過 實體長度的 1 倍
+    """
+    if close_p <= open_p: return False # 收黑直接淘汰
+    
+    body_len = close_p - open_p
+    upper_shadow = high_p - close_p
+    
+    # 如果上影線太長 (超過實體的 1.2 倍)，代表賣壓重，容易假突破
+    if upper_shadow > body_len * 1.2:
+        return False
+    return True
+
+# --- 優化功能 2: 檢查乖離率 (避免追高) ---
+def get_bias_status(price, sma20):
+    """ 計算乖離率：(現價 - 月線) / 月線 """
+    bias = (price - sma20) / sma20 * 100
+    if bias > 20: return "⚠️過熱"
+    if bias > 15: return "偏高"
+    return "正常"
+
 def get_dynamic_support(current_price, df):
-    """ 動態尋找均線支撐 """
     ma_days = [5, 10, 20, 60]
     ma_values = {f"{d}MA": df['Close'].tail(d).mean() for d in ma_days}
     candidates = {k: v for k, v in ma_values.items() if v < current_price}
-    
     if candidates:
         best_ma_name = max(candidates, key=candidates.get)
         return best_ma_name, candidates[best_ma_name]
     return "前低", df['Low'].min()
 
 def get_pressure_from_volume(df):
-    """ 計算籌碼壓力 """
     idx_max_vol = df['Volume'].idxmax()
     return df.loc[idx_max_vol]['High']
 
 def analyze_market():
-    print(f"🚀 啟動雙策略掃描 (Max Top 10)...")
+    print(f"🚀 啟動極致精準掃描 (Top 10 + 避雷針過濾)...")
     
-    strong_list = [] # 策略A: 強勢股
-    ready_list = []  # 策略B: 盤整蓄勢股
+    strong_list = []
+    ready_list = []
     
     count = 0
     for code in TARGET_STOCKS:
@@ -88,33 +109,47 @@ def analyze_market():
             prev = df.iloc[-2]
             name = STOCK_MAP.get(code, code)
             
-            # --- 共同指標 ---
+            # 基礎數據
             price = latest['Close']
+            open_p = latest['Open']
+            high_p = latest['High']
+            low_p = latest['Low']
+            
             sma20 = df['Close'].tail(20).mean()
             sma60 = df['Close'].tail(60).mean()
             vol_ma5 = df['Volume'].tail(5).mean()
-            pct_change = (latest['Close'] - prev['Close']) / prev['Close'] * 100
+            pct_change = (price - prev['Close']) / prev['Close'] * 100
             
-            # 計算壓力支撐 (顯示用)
+            # 進階運算
             sup_n, sup_p = get_dynamic_support(price, df)
             res_p = get_pressure_from_volume(df)
             res_note = "(新高)" if price > res_p else "(量壓)"
             if price > res_p: res_p = df['High'].max()
+            
+            bias_status = get_bias_status(price, sma20)
 
-            # ========== 策略 A: 強勢攻擊股 ==========
+            # --- 全域濾網 (Global Filter) ---
+            # 1. 必須收紅 (今日收盤 > 昨日收盤)
+            # 2. 必須是實體紅K (過濾長上影線/避雷針)
+            if pct_change <= 0 or not is_solid_candle(open_p, price, high_p, low_p):
+                continue
+
+            # ========== 策略 A: 強勢攻擊 (Precision Mode) ==========
             is_trend = price > sma20 and sma20 > sma60
-            is_spike = latest['Volume'] > vol_ma5 * 1.3
-            is_up = pct_change > 1.0
+            # 量能加嚴：除了大於均量，也要大於昨日量的 1.0 倍 (確保量沒縮)
+            is_spike = latest['Volume'] > vol_ma5 * 1.3 and latest['Volume'] > prev['Volume']
+            is_up = pct_change > 1.5 # 漲幅要求稍微提高到 1.5%
             
             if is_trend and is_spike and is_up:
                 strong_list.append({
                     "name": name, "code": code, "price": round(price, 1),
                     "pct": round(pct_change, 2), "sup_p": round(sup_p, 1), 
-                    "sup_n": sup_n, "res_p": round(res_p, 1), "res_note": res_note
+                    "sup_n": sup_n, "res_p": round(res_p, 1), "res_note": res_note,
+                    "bias": bias_status
                 })
                 print(f"🔥 強勢: {name}")
 
-            # ========== 策略 B: 盤整蓄勢股 ==========
+            # ========== 策略 B: 盤整蓄勢 (Precision Mode) ==========
             hist_10 = df.iloc[-10:]
             box_high = hist_10['High'].max()
             box_low = hist_10['Low'].min()
@@ -130,11 +165,12 @@ def analyze_market():
             is_long_trend = price > sma60 
 
             if is_tight_box and is_upper_half and is_accumulating and is_long_trend:
-                if pct_change < 3.0: 
+                if pct_change < 4.0: # 盤整股漲幅不宜過大，太大就變噴出了
                     ready_list.append({
                         "name": name, "code": code, "price": round(price, 1),
                         "box_h": round(box_high, 1), "box_l": round(box_low, 1),
-                        "vol_ratio": round(vol_3ma/vol_10ma, 1)
+                        "vol_ratio": round(vol_3ma/vol_10ma, 1),
+                        "bias": bias_status
                     })
                     print(f"📦 蓄勢: {name}")
 
@@ -142,51 +178,37 @@ def analyze_market():
             
         except Exception: continue
 
-    # --- 訊息發送與報告產出 ---
-    
-    # 1. 建立統計摘要
-    msg = "【📊 AI 雙策略選股報告】\n"
-    msg += f"🔥 強勢攻擊: 共 {len(strong_list)} 檔\n"
-    msg += f"📦 盤整蓄勢: 共 {len(ready_list)} 檔\n"
+    # --- 訊息組裝 ---
+    msg = "【📊 AI 極致精準選股】\n"
+    msg += f"🔥 強勢: {len(strong_list)} | 📦 蓄勢: {len(ready_list)}\n"
     msg += "="*16 + "\n"
 
-    # 2. 判斷是否有標的
     if not strong_list and not ready_list:
-        msg += "今日盤勢震盪，兩策略皆無符合標的。\n建議觀望或減少操作。"
+        msg += "今日無符合「實體紅K+有量」之標的。\n避開假突破風險，建議觀望。"
     else:
-        # 區塊 1: 強勢股 (顯示 Top 10)
+        # 強勢股 (Top 10)
         if strong_list:
             strong_list.sort(key=lambda x: x['pct'], reverse=True)
-            # 這裡改成取前 10 名
-            top_strong = strong_list[:10]
-            msg += f"🚀 強勢股 (Top {len(top_strong)}):\n"
-            for s in top_strong:
+            for s in strong_list[:10]:
                 msg += f"🔥 {s['code']} {s['name']}\n"
                 msg += f"💰 {s['price']} (+{s['pct']}%)\n"
+                if s['bias'] != "正常": msg += f"⚠️ 乖離{s['bias']} (勿追高)\n"
                 msg += f"🟢 撐 {s['sup_p']} / 🔴 壓 {s['res_p']}\n"
                 msg += "-"*16 + "\n"
-        else:
-            msg += "🚀 強勢股: 本日無標的\n"
-            msg += "-"*16 + "\n"
 
-        # 區塊 2: 蓄勢股 (顯示 Top 10)
+        # 蓄勢股 (Top 10)
         if ready_list:
             ready_list.sort(key=lambda x: x['vol_ratio'], reverse=True)
-            # 這裡也改成取前 10 名
-            top_ready = ready_list[:10]
-            msg += f"📦 蓄勢股 (Top {len(top_ready)}):\n"
-            for s in top_ready:
-                msg += f"👀 {s['code']} {s['name']}\n"
-                msg += f"💰 {s['price']} (區間整理)\n"
-                msg += f"📊 {s['box_l']}~{s['box_h']} (量增{s['vol_ratio']}倍)\n"
-                msg += "-"*16 + "\n"
-        else:
-            msg += "📦 蓄勢股: 本日無標的\n"
+            msg += f"\n📦 盤整蓄勢 (籌碼安定)\n"
             msg += "-"*16 + "\n"
+            for s in ready_list[:10]:
+                msg += f"👀 {s['code']} {s['name']}\n"
+                msg += f"💰 {s['price']} (區間:{s['box_l']}~{s['box_h']})\n"
+                msg += f"⚡ 量能放大: {s['vol_ratio']}倍\n"
+                msg += "-"*16 + "\n"
 
-    msg += "(AI 僅供參考)"
+    msg += "(AI 過濾上影線與假突破)"
     
-    # 3. 發送
     if LINE_ACCESS_TOKEN:
         send_line_msg(msg)
         print("✅ 報告發送成功")
