@@ -11,7 +11,6 @@ LINE_USER_ID = os.environ.get("LINE_USER_ID")
 
 # --- 股票清單 ---
 STOCK_MAP = {
-    # 權值龍頭
     "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2308": "台達電", "2303": "聯電",
     "2881": "富邦金", "2882": "國泰金", "1301": "台塑", "2002": "中鋼", "2603": "長榮",
     "3711": "日月光", "2891": "中信金", "1216": "統一", "2886": "兆豐金", "2884": "玉山金",
@@ -22,17 +21,14 @@ STOCK_MAP = {
     "3037": "欣興", "1605": "華新", "2059": "川湖", "2327": "國巨", "2408": "南亞科",
     "2609": "陽明", "2615": "萬海", "3017": "奇鋐", "3231": "緯創", "4938": "和碩",
     "2382": "廣達", "2357": "華碩", "3008": "大立光", "1303": "南亞",
-    # 熱門中型與題材股
-    "1513": "中興電", "1503": "士電", "1519": "華城", "1504": "東元", # 重電
-    "3035": "智原", "3443": "創意", "3661": "世芯", "6531": "愛普",   # IP/IC
-    "2376": "技嘉", "2356": "英業達", "3013": "晟銘電",               # AI 伺服器
-    "3324": "雙鴻", "3017": "奇鋐",                                   # 散熱
-    "8046": "南電", "3189": "景碩",                                   # ABF
-    "2618": "長榮航", "2610": "華航",                                 # 航空
-    "9904": "寶成", "9910": "豐泰", "9907": "統一實",                 # 傳產
-    "6285": "啟碁", "5347": "世界", "6446": "藥華藥"                  # 其他
+    "1513": "中興電", "1503": "士電", "1519": "華城", "1504": "東元",
+    "3035": "智原", "3443": "創意", "3661": "世芯", "6531": "愛普",
+    "2376": "技嘉", "2356": "英業達", "3013": "晟銘電", "3324": "雙鴻",
+    "8046": "南電", "3189": "景碩", "2618": "長榮航", "2610": "華航",
+    "9904": "寶成", "9910": "豐泰", "9907": "統一實", "6285": "啟碁",
+    "5347": "世界", "6446": "藥華藥", "3529": "力旺", "5274": "信驊",
+    "2498": "宏達電", "2363": "矽統", "6116": "彩晶"
 }
-
 TARGET_STOCKS = sorted(list(STOCK_MAP.keys()))
 
 def send_line_msg(msg):
@@ -50,29 +46,56 @@ def send_line_msg(msg):
     except Exception as e:
         print(f"❌ 連線錯誤: {e}")
 
-# --- 優化功能 1: 檢查 K 棒結構 (過濾避雷針) ---
-def is_solid_candle(open_p, close_p, high_p, low_p):
-    """
-    判斷是否為實體強勢紅 K (拒絕長上影線)
-    規則：上影線長度 不得超過 實體長度的 1 倍
-    """
-    if close_p <= open_p: return False # 收黑直接淘汰
+def calculate_kd(df, n=9):
+    """ 計算 KD 指標 """
+    low_list = df['Low'].rolling(window=n).min()
+    high_list = df['High'].rolling(window=n).max()
+    rsv = (df['Close'] - low_list) / (high_list - low_list) * 100
+    rsv = rsv.fillna(50)
     
-    body_len = close_p - open_p
-    upper_shadow = high_p - close_p
+    k = pd.Series(0.0, index=df.index)
+    d = pd.Series(0.0, index=df.index)
+    k.iloc[0] = 50
+    d.iloc[0] = 50
     
-    # 如果上影線太長 (超過實體的 1.2 倍)，代表賣壓重，容易假突破
-    if upper_shadow > body_len * 1.2:
-        return False
-    return True
+    for i in range(1, len(df)):
+        k.iloc[i] = (2/3) * k.iloc[i-1] + (1/3) * rsv.iloc[i]
+        d.iloc[i] = (2/3) * d.iloc[i-1] + (1/3) * k.iloc[i]
+        
+    return k, d
 
-# --- 優化功能 2: 檢查乖離率 (避免追高) ---
-def get_bias_status(price, sma20):
-    """ 計算乖離率：(現價 - 月線) / 月線 """
-    bias = (price - sma20) / sma20 * 100
-    if bias > 20: return "⚠️過熱"
-    if bias > 15: return "偏高"
-    return "正常"
+# --- 核心優化: AI 趨勢預判 (加入鈍化偵測) ---
+def get_prediction(k_series, d_series, bias_pct):
+    # 取得最近 3 天的 K 值 (用來判斷鈍化)
+    k_now = k_series.iloc[-1]
+    d_now = d_series.iloc[-1]
+    
+    k_prev1 = k_series.iloc[-2]
+    k_prev2 = k_series.iloc[-3]
+    
+    # 1. 檢查鈍化 (Passivation)
+    # 連續 3 天 K 值 > 80，代表超級強勢，指標鈍化
+    if k_now > 80 and k_prev1 > 80 and k_prev2 > 80:
+        return "🚀高檔鈍化(飆)"
+
+    # 2. 檢查乖離率 (過熱保護)
+    # 如果沒有鈍化，但乖離過大，則視為風險
+    if bias_pct > 20: return "⚠️乖離過大"
+    
+    # 3. 一般 KD 狀態判定
+    # 黃金交叉 (低檔轉強)
+    if k_now > d_now and k_now < 50 and k_prev1 < d_series.iloc[-2]:
+        return "📈低檔金叉(買)"
+    
+    # 黃金交叉 (續強)
+    if k_now > d_now and k_now < 80: 
+        return "🔥多頭續攻"
+    
+    # 死亡交叉 (高檔修正)
+    if k_now < d_now and k_now > 70: 
+        return "🔻高檔死叉(賣)"
+    
+    return "➡️中性盤整"
 
 def get_dynamic_support(current_price, df):
     ma_days = [5, 10, 20, 60]
@@ -88,7 +111,7 @@ def get_pressure_from_volume(df):
     return df.loc[idx_max_vol]['High']
 
 def analyze_market():
-    print(f"🚀 啟動極致精準掃描 (Top 10 + 避雷針過濾)...")
+    print(f"🚀 啟動 AI 掃描 (含高檔鈍化偵測)...")
     
     strong_list = []
     ready_list = []
@@ -101,76 +124,73 @@ def analyze_market():
         try:
             ticker = f"{code}.TW"
             stock = yf.Ticker(ticker)
-            df = stock.history(period="3mo")
+            df = stock.history(period="6mo")
             
             if len(df) < 60: continue
             
+            k_series, d_series = calculate_kd(df)
             latest = df.iloc[-1]
             prev = df.iloc[-2]
             name = STOCK_MAP.get(code, code)
             
-            # 基礎數據
             price = latest['Close']
-            open_p = latest['Open']
-            high_p = latest['High']
-            low_p = latest['Low']
-            
             sma20 = df['Close'].tail(20).mean()
             sma60 = df['Close'].tail(60).mean()
             vol_ma5 = df['Volume'].tail(5).mean()
             pct_change = (price - prev['Close']) / prev['Close'] * 100
+            bias_pct = (price - sma20) / sma20 * 100
             
-            # 進階運算
+            # --- 取得預判 (傳入整個 Series 以判斷鈍化) ---
+            prediction = get_prediction(k_series, d_series, bias_pct)
+
             sup_n, sup_p = get_dynamic_support(price, df)
             res_p = get_pressure_from_volume(df)
-            res_note = "(新高)" if price > res_p else "(量壓)"
             if price > res_p: res_p = df['High'].max()
-            
-            bias_status = get_bias_status(price, sma20)
+            res_note = "(新高)" if price >= res_p * 0.98 else "(量壓)"
 
-            # --- 全域濾網 (Global Filter) ---
-            # 1. 必須收紅 (今日收盤 > 昨日收盤)
-            # 2. 必須是實體紅K (過濾長上影線/避雷針)
-            if pct_change <= 0 or not is_solid_candle(open_p, price, high_p, low_p):
-                continue
+            # 避雷針濾網
+            upper_shadow = latest['High'] - max(latest['Close'], latest['Open'])
+            body = abs(latest['Close'] - latest['Open'])
+            is_solid = upper_shadow < (body * 1.5) if body > 0 else False
 
-            # ========== 策略 A: 強勢攻擊 (Precision Mode) ==========
+            # ========== 策略 A: 強勢攻擊 ==========
             is_trend = price > sma20 and sma20 > sma60
-            # 量能加嚴：除了大於均量，也要大於昨日量的 1.0 倍 (確保量沒縮)
-            is_spike = latest['Volume'] > vol_ma5 * 1.3 and latest['Volume'] > prev['Volume']
-            is_up = pct_change > 1.5 # 漲幅要求稍微提高到 1.5%
+            is_spike = latest['Volume'] > vol_ma5 * 1.3
+            is_up = pct_change > 1.0
             
-            if is_trend and is_spike and is_up:
+            # 如果是鈍化狀態，就算量縮也算強勢 (因為主力鎖碼)
+            is_passivation = "鈍化" in prediction
+            
+            if is_trend and is_up and is_solid and (is_spike or is_passivation):
                 strong_list.append({
                     "name": name, "code": code, "price": round(price, 1),
                     "pct": round(pct_change, 2), "sup_p": round(sup_p, 1), 
-                    "sup_n": sup_n, "res_p": round(res_p, 1), "res_note": res_note,
-                    "bias": bias_status
+                    "res_p": round(res_p, 1), "pred": prediction
                 })
-                print(f"🔥 強勢: {name}")
+                print(f"🔥 強勢: {name} ({prediction})")
 
-            # ========== 策略 B: 盤整蓄勢 (Precision Mode) ==========
+            # ========== 策略 B: 盤整蓄勢 ==========
             hist_10 = df.iloc[-10:]
-            box_high = hist_10['High'].max()
-            box_low = hist_10['Low'].min()
-            box_width = (box_high - box_low) / box_low
-            
-            is_tight_box = box_width < 0.08
-            box_mid = (box_high + box_low) / 2
-            is_upper_half = price > box_mid
+            box_width = (hist_10['High'].max() - hist_10['Low'].min()) / hist_10['Low'].min()
+            is_tight_box = box_width < 0.12
+            is_upper_half = price > (hist_10['High'].max() + hist_10['Low'].min()) / 2
             
             vol_3ma = df['Volume'].tail(3).mean()
             vol_10ma = df['Volume'].tail(10).mean()
             is_accumulating = vol_3ma > vol_10ma 
-            is_long_trend = price > sma60 
+            
+            k_now = k_series.iloc[-1]
+            d_now = d_series.iloc[-1]
+            is_kd_gold = k_now > d_now and k_series.iloc[-2] < d_series.iloc[-2]
 
-            if is_tight_box and is_upper_half and is_accumulating and is_long_trend:
-                if pct_change < 4.0: # 盤整股漲幅不宜過大，太大就變噴出了
+            if is_tight_box and is_upper_half and is_accumulating and (is_kd_gold or is_trend):
+                 if pct_change < 4.0: 
                     ready_list.append({
                         "name": name, "code": code, "price": round(price, 1),
-                        "box_h": round(box_high, 1), "box_l": round(box_low, 1),
+                        "box_h": round(hist_10['High'].max(), 1), 
+                        "box_l": round(hist_10['Low'].min(), 1),
                         "vol_ratio": round(vol_3ma/vol_10ma, 1),
-                        "bias": bias_status
+                        "pred": "🚀蓄勢待發" if is_kd_gold else "👀區間整理"
                     })
                     print(f"📦 蓄勢: {name}")
 
@@ -179,35 +199,32 @@ def analyze_market():
         except Exception: continue
 
     # --- 訊息組裝 ---
-    msg = "【📊 AI 極致精準選股】\n"
+    msg = "【📊 AI 隔日預判 (含鈍化)】\n"
     msg += f"🔥 強勢: {len(strong_list)} | 📦 蓄勢: {len(ready_list)}\n"
     msg += "="*16 + "\n"
 
     if not strong_list and not ready_list:
-        msg += "今日無符合「實體紅K+有量」之標的。\n避開假突破風險，建議觀望。"
+        msg += "今日無明確訊號，建議觀望。"
     else:
-        # 強勢股 (Top 10)
         if strong_list:
             strong_list.sort(key=lambda x: x['pct'], reverse=True)
+            msg += f"🚀 強勢股 (Top 10):\n"
             for s in strong_list[:10]:
-                msg += f"🔥 {s['code']} {s['name']}\n"
+                msg += f"🔥 {s['code']} {s['name']} {s['pred']}\n"
                 msg += f"💰 {s['price']} (+{s['pct']}%)\n"
-                if s['bias'] != "正常": msg += f"⚠️ 乖離{s['bias']} (勿追高)\n"
                 msg += f"🟢 撐 {s['sup_p']} / 🔴 壓 {s['res_p']}\n"
                 msg += "-"*16 + "\n"
 
-        # 蓄勢股 (Top 10)
         if ready_list:
             ready_list.sort(key=lambda x: x['vol_ratio'], reverse=True)
-            msg += f"\n📦 盤整蓄勢 (籌碼安定)\n"
-            msg += "-"*16 + "\n"
+            msg += f"\n📦 盤整蓄勢 (Top 10):\n"
             for s in ready_list[:10]:
-                msg += f"👀 {s['code']} {s['name']}\n"
-                msg += f"💰 {s['price']} (區間:{s['box_l']}~{s['box_h']})\n"
-                msg += f"⚡ 量能放大: {s['vol_ratio']}倍\n"
+                msg += f"👀 {s['code']} {s['name']} {s['pred']}\n"
+                msg += f"💰 {s['price']} (整理)\n"
+                msg += f"📊 區間:{s['box_l']}~{s['box_h']}\n"
                 msg += "-"*16 + "\n"
 
-    msg += "(AI 過濾上影線與假突破)"
+    msg += "(AI 偵測 KD 鈍化與乖離)"
     
     if LINE_ACCESS_TOKEN:
         send_line_msg(msg)
